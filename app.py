@@ -8,16 +8,17 @@ from PIL import Image
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("Outil d'Émargement")
+st.title("Emargement- Conseil National du Réseau CERFRANCE")
 
 # --- Étape 1 : Upload du fichier Excel ---
-uploaded_file = st.file_uploader("Sélectionner le fichier Excel des réunions", type=["xlsx"])
+#uploaded_file = st.file_uploader("Sélectionner le fichier Excel des réunions", type=["xlsx"])
+EXCEL_PATH = r"C:\Projet_Pennylane\Emargement\Bdd_reunion.xlsx"
 
-if uploaded_file is not None:
+if EXCEL_PATH is not None:
 
     # Charger les réunions uniques depuis le fichier
     df = get_unique_reunions() if False else None  # placeholder, on utilisera df directement
-    df = __import__('pandas').read_excel(uploaded_file)
+    df = __import__('pandas').read_excel(EXCEL_PATH)
 
     # Liste des réunions
     liste_reunions = df["Reunions"].unique().tolist()
@@ -51,7 +52,7 @@ if uploaded_file is not None:
                 )
             signature_j1 = None
             if statut_j1 == "Présent":
-                st.write(f"Signature Jour 1 pour {row['Nom']}:")
+                st.write(f"Signature 1  {row['Nom']}:")
                 canvas_j1 = st_canvas(
                     stroke_width=2,
                     stroke_color="black",
@@ -71,7 +72,7 @@ if uploaded_file is not None:
                 )
             signature_j2 = None
             if statut_j2 == "Présent":
-                st.write(f"Signature Jour 2 pour {row['Nom']}:")
+                st.write(f"Signature 2  {row['Nom']}:")
                 canvas_j2 = st_canvas(
                     stroke_width=2,
                     stroke_color="black",
