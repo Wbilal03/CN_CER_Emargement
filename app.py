@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
@@ -11,6 +10,11 @@ def _canvas_has_strokes(canvas_result):
     if canvas_result is None or canvas_result.json_data is None:
         return False
     return len(canvas_result.json_data.get("objects", [])) > 0
+
+
+@st.cache_data(show_spinner=False)
+def _load_excel(file_bytes):
+    return pd.read_excel(file_bytes)
 
 
 st.set_page_config(layout="wide")
@@ -36,11 +40,28 @@ uploaded_file = st.file_uploader("Selectionner le fichier Excel des reunions", t
 #EXCEL_PATH = r"C:\Users\bboussari\OneDrive - CONSEIL NATIONAL CERFRANCE\Direction Digital\Bdd_reunion.xlsx"
 
 if uploaded_file is not None:
-    df = pd.read_excel(uploaded_file)
+    df = _load_excel(uploaded_file.getvalue())
     liste_reunions = df["Reunions"].unique().tolist()
     selected_meeting = st.selectbox("Choisir la reunion", liste_reunions)
 
     if selected_meeting:
+        required_columns = {"Reunions", "Nom", "Poste", "Entreprise"}
+        if not required_columns.issubset(df.columns):
+            st.error("Colonnes attendues: Reunions, Nom, Poste, Entreprise.")
+            st.stop()
+
+        selected_rows = df[df["Reunions"] == selected_meeting]
+        auto_show_day2 = True
+        if "NbJours" in df.columns:
+            auto_show_day2 = int(selected_rows["NbJours"].fillna(1).max()) >= 2
+        elif "NombreJours" in df.columns:
+            auto_show_day2 = int(selected_rows["NombreJours"].fillna(1).max()) >= 2
+
+        show_day2_key = f"show_day2::{selected_meeting}"
+        if show_day2_key not in st.session_state:
+            st.session_state[show_day2_key] = auto_show_day2
+        show_day2 = st.toggle("Reunion sur 2 jours", key=show_day2_key)
+
         meeting_state_key = f"meeting_state::{selected_meeting}"
         if meeting_state_key not in st.session_state:
             st.session_state[meeting_state_key] = {}
@@ -75,7 +96,11 @@ if uploaded_file is not None:
 
         for index, row in participants_df.iterrows():
             participant_state = meeting_state[index]
-            col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 2])
+            if show_day2:
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 2])
+            else:
+                col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+                col5 = None
 
             with col1:
                 st.write(row["Nom"])
@@ -115,62 +140,61 @@ if uploaded_file is not None:
                     participant_state["Signature_Jour1"] = None
                     participant_state["CanvasVersion_Jour1"] += 1
                     st.rerun()
-                if canvas_j1 is not None and canvas_j1.json_data is not None:
-                    participant_state["Drawing_Jour1"] = canvas_j1.json_data
+                # Autosave robuste: on met a jour uniquement si des traits existent.
+                # Evite de perdre une signature a cause d'un rerun avec canvas vide.
                 if _canvas_has_strokes(canvas_j1):
+                    participant_state["Drawing_Jour1"] = canvas_j1.json_data
                     signature_j1 = convert_canvas_to_image(canvas_j1)
                     if signature_j1 is not None:
-                        signature_array_j1 = np.array(signature_j1)
-                        if np.any(signature_array_j1 < 245):
-                            participant_state["Signature_Jour1"] = signature_j1
-                elif canvas_j1 is not None and canvas_j1.json_data is not None:
-                    participant_state["Signature_Jour1"] = None
+                        participant_state["Signature_Jour1"] = signature_j1
             else:
                 participant_state["Drawing_Jour1"] = None
                 participant_state["Signature_Jour1"] = None
 
-            key_j2 = f"{selected_meeting}_{index}_j2"
-            if key_j2 not in st.session_state:
-                st.session_state[key_j2] = participant_state["Jour2"]
-            with col5:
-                statut_j2 = st.radio(
-                    f"Jour 2 - {row['Nom']}",
-                    ["Present", "Absent", "Excuse"],
-                    key=key_j2,
-                )
-            participant_state["Jour2"] = statut_j2
+            if show_day2:
+                key_j2 = f"{selected_meeting}_{index}_j2"
+                if key_j2 not in st.session_state:
+                    st.session_state[key_j2] = participant_state["Jour2"]
+                with col5:
+                    statut_j2 = st.radio(
+                        f"Jour 2 - {row['Nom']}",
+                        ["Present", "Absent", "Excuse"],
+                        key=key_j2,
+                    )
+                participant_state["Jour2"] = statut_j2
 
-            if statut_j2 == "Present":
-                st.write(f"Signature 2 {row['Nom']}:")
-                canvas_key_j2 = (
-                    f"canvas_j2_{selected_meeting}_{index}_{participant_state['CanvasVersion_Jour2']}"
-                )
-                canvas_j2 = st_canvas(
-                    stroke_width=2,
-                    stroke_color="black",
-                    background_color="white",
-                    height=150,
-                    width=400,
-                    display_toolbar=True,
-                    initial_drawing=participant_state["Drawing_Jour2"],
-                    key=canvas_key_j2,
-                )
-                if st.button("Recommencer J2", key=f"reset_j2_{selected_meeting}_{index}"):
+                if statut_j2 == "Present":
+                    st.write(f"Signature 2 {row['Nom']}:")
+                    canvas_key_j2 = (
+                        f"canvas_j2_{selected_meeting}_{index}_{participant_state['CanvasVersion_Jour2']}"
+                    )
+                    canvas_j2 = st_canvas(
+                        stroke_width=2,
+                        stroke_color="black",
+                        background_color="white",
+                        height=150,
+                        width=400,
+                        display_toolbar=True,
+                        initial_drawing=participant_state["Drawing_Jour2"],
+                        key=canvas_key_j2,
+                    )
+                    if st.button("Recommencer J2", key=f"reset_j2_{selected_meeting}_{index}"):
+                        participant_state["Drawing_Jour2"] = None
+                        participant_state["Signature_Jour2"] = None
+                        participant_state["CanvasVersion_Jour2"] += 1
+                        st.rerun()
+                    # Autosave robuste: on met a jour uniquement si des traits existent.
+                    # Evite de perdre une signature a cause d'un rerun avec canvas vide.
+                    if _canvas_has_strokes(canvas_j2):
+                        participant_state["Drawing_Jour2"] = canvas_j2.json_data
+                        signature_j2 = convert_canvas_to_image(canvas_j2)
+                        if signature_j2 is not None:
+                            participant_state["Signature_Jour2"] = signature_j2
+                else:
                     participant_state["Drawing_Jour2"] = None
                     participant_state["Signature_Jour2"] = None
-                    participant_state["CanvasVersion_Jour2"] += 1
-                    st.rerun()
-                if canvas_j2 is not None and canvas_j2.json_data is not None:
-                    participant_state["Drawing_Jour2"] = canvas_j2.json_data
-                if _canvas_has_strokes(canvas_j2):
-                    signature_j2 = convert_canvas_to_image(canvas_j2)
-                    if signature_j2 is not None:
-                        signature_array_j2 = np.array(signature_j2)
-                        if np.any(signature_array_j2 < 245):
-                            participant_state["Signature_Jour2"] = signature_j2
-                elif canvas_j2 is not None and canvas_j2.json_data is not None:
-                    participant_state["Signature_Jour2"] = None
             else:
+                participant_state["Jour2"] = "Absent"
                 participant_state["Drawing_Jour2"] = None
                 participant_state["Signature_Jour2"] = None
 
@@ -190,7 +214,7 @@ if uploaded_file is not None:
             )
 
         if st.button("Generer PDF"):
-            pdf_buffer = generate_pdf(selected_meeting, participants_data)
+            pdf_buffer = generate_pdf(selected_meeting, participants_data, include_day2=show_day2)
             st.success("PDF genere avec succes !")
             st.download_button(
                 label="Telecharger le PDF",
@@ -198,3 +222,5 @@ if uploaded_file is not None:
                 file_name=f"emargement_{selected_meeting}.pdf",
                 mime="application/pdf",
             )
+else:
+    st.info("Charge un fichier Excel pour commencer.")
