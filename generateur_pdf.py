@@ -10,6 +10,7 @@ except Exception:
     PdfWriter = None
     HAS_PYPDF = False
 from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas

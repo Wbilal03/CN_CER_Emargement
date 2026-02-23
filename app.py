@@ -1,11 +1,16 @@
+import math
+from datetime import datetime
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-from datetime import datetime
 
 from Signature_utils import convert_canvas_to_image
 from generateur_pdf import generate_pdf
-from io import BytesIO
+
+PRESENCE_OPTIONS = ["Present", "Absent", "Excuse"]
+DEFAULT_STATUS = "Absent"
 
 
 def _canvas_has_strokes(canvas_result):
@@ -14,14 +19,73 @@ def _canvas_has_strokes(canvas_result):
     return len(canvas_result.json_data.get("objects", [])) > 0
 
 
+def _normalize_status(value):
+    if value in PRESENCE_OPTIONS:
+        return value
+    return DEFAULT_STATUS
+
+
 @st.cache_data(show_spinner=False)
 def _load_excel(file_bytes):
     return pd.read_excel(BytesIO(file_bytes))
 
 
+def _presence_selector(label, key):
+    selected = st.segmented_control(
+        label=label,
+        options=PRESENCE_OPTIONS,
+        selection_mode="single",
+        key=key,
+    )
+    return _normalize_status(selected)
+
+
+def _render_day_block(day_number, participant_state, selected_meeting, index, person_name, canvas_width):
+    status_field = f"Jour{day_number}"
+    draw_field = f"Drawing_Jour{day_number}"
+    sign_field = f"Signature_Jour{day_number}"
+    version_field = f"CanvasVersion_Jour{day_number}"
+    status_key = f"{selected_meeting}_{index}_j{day_number}"
+
+    if status_key not in st.session_state:
+        st.session_state[status_key] = _normalize_status(participant_state.get(status_field))
+
+    status = _presence_selector(f"Jour {day_number} - {person_name}", status_key)
+    participant_state[status_field] = status
+
+    if status != "Present":
+        participant_state[draw_field] = None
+        participant_state[sign_field] = None
+        return
+
+    st.caption(f"Signature J{day_number}")
+    canvas_key = f"canvas_j{day_number}_{selected_meeting}_{index}_{participant_state[version_field]}"
+    canvas_result = st_canvas(
+        stroke_width=2,
+        stroke_color="black",
+        background_color="white",
+        height=140,
+        width=canvas_width,
+        display_toolbar=True,
+        initial_drawing=participant_state[draw_field],
+        key=canvas_key,
+    )
+
+    if st.button(f"Recommencer J{day_number}", key=f"reset_j{day_number}_{selected_meeting}_{index}"):
+        participant_state[draw_field] = None
+        participant_state[sign_field] = None
+        participant_state[version_field] += 1
+        st.rerun()
+
+    if _canvas_has_strokes(canvas_result):
+        participant_state[draw_field] = canvas_result.json_data
+        signature_image = convert_canvas_to_image(canvas_result)
+        if signature_image is not None:
+            participant_state[sign_field] = signature_image
+
+
 st.set_page_config(layout="wide")
 st.title("CNCER Sign")
-#ajouté une balise de style pour cacher les éléments de navigation et de décoration de Streamlit pour une interface plus épurée lors de la signature. Cela permet aux utilisateurs de se concentrer sur le processus de signature sans distractions inutiles.
 
 st.markdown(
     """
@@ -33,6 +97,46 @@ st.markdown(
     [data-testid="stStatusWidget"] {display: none;}
     [data-testid="stDecoration"] {display: none;}
     [data-testid="stSidebarNav"] {display: none;}
+
+    div[data-testid="stSegmentedControl"] {
+        background: #f4f7f9;
+        border: 1px solid #d7dde4;
+        border-radius: 12px;
+        padding: 4px;
+    }
+    div[data-testid="stSegmentedControl"] button {
+        border-radius: 9px !important;
+        font-weight: 600 !important;
+        border: none !important;
+        color: #1f2937 !important;
+        min-height: 34px !important;
+    }
+    div[data-testid="stSegmentedControl"] button[aria-pressed="true"] {
+        color: #ffffff !important;
+    }
+    div[data-testid="stSegmentedControl"] button:nth-of-type(1)[aria-pressed="true"] {
+        background: #16a34a !important; /* Present */
+        box-shadow: 0 2px 8px rgba(22, 163, 74, 0.28);
+    }
+    div[data-testid="stSegmentedControl"] button:nth-of-type(2)[aria-pressed="true"] {
+        background: #dc2626 !important; /* Absent */
+        box-shadow: 0 2px 8px rgba(220, 38, 38, 0.28);
+    }
+    div[data-testid="stSegmentedControl"] button:nth-of-type(3)[aria-pressed="true"] {
+        background: #7c3aed !important; /* Excuse */
+        box-shadow: 0 2px 8px rgba(124, 58, 237, 0.28);
+    }
+    @media (max-width: 900px) {
+        .block-container {
+            padding-left: 0.7rem;
+            padding-right: 0.7rem;
+            padding-top: 0.6rem;
+        }
+        div[data-testid="stSegmentedControl"] button {
+            min-height: 42px !important;
+            font-size: 0.95rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -40,180 +144,159 @@ st.markdown(
 
 uploaded_file = st.file_uploader("Selectionner le fichier Excel des reunions", type=["xlsx"])
 
-if uploaded_file is not None:
-    df = _load_excel(uploaded_file.getvalue())
-    required_columns = {"Reunions", "Nom", "Poste", "Entreprise"}
-    if not required_columns.issubset(df.columns):
-        st.error("Colonnes attendues: Reunions, Nom, Poste, Entreprise.")
-        st.stop()
+if uploaded_file is None:
+    st.info("Chargez un fichier Excel pour commencer.")
+    st.stop()
 
-    liste_reunions = df["Reunions"].dropna().unique().tolist()
-    selected_meeting = st.selectbox("Choisir la reunion", liste_reunions)
+df = _load_excel(uploaded_file.getvalue())
+required_columns = {"Reunions", "Nom", "Poste", "Entreprise"}
+if not required_columns.issubset(df.columns):
+    st.error("Colonnes attendues: Reunions, Nom, Poste, Entreprise.")
+    st.stop()
 
-    if selected_meeting:
-        selected_rows = df[df["Reunions"] == selected_meeting]
-        auto_show_day2 = True
-        if "NbJours" in df.columns:
-            auto_show_day2 = int(selected_rows["NbJours"].fillna(1).max()) >= 2
-        elif "NombreJours" in df.columns:
-            auto_show_day2 = int(selected_rows["NombreJours"].fillna(1).max()) >= 2
+liste_reunions = df["Reunions"].dropna().unique().tolist()
+selected_meeting = st.selectbox("Choisir la reunion", liste_reunions)
+if not selected_meeting:
+    st.stop()
 
-        show_day2_key = f"show_day2::{selected_meeting}"
-        if show_day2_key not in st.session_state:
-            st.session_state[show_day2_key] = auto_show_day2
-        show_day2 = st.toggle("Reunion sur 2 jours", key=show_day2_key)
+selected_rows = df[df["Reunions"] == selected_meeting]
+auto_show_day2 = False
+if "NbJours" in df.columns:
+    auto_show_day2 = int(selected_rows["NbJours"].fillna(1).max()) >= 2
+elif "NombreJours" in df.columns:
+    auto_show_day2 = int(selected_rows["NombreJours"].fillna(1).max()) >= 2
 
-        meeting_state_key = f"meeting_state::{selected_meeting}"
-        if meeting_state_key not in st.session_state:
-            st.session_state[meeting_state_key] = {}
-        meeting_state = st.session_state[meeting_state_key]
+toolbar_col1, toolbar_col2, toolbar_col3 = st.columns([2, 2, 2])
+with toolbar_col1:
+    show_day2_key = f"show_day2::{selected_meeting}"
+    if show_day2_key not in st.session_state:
+        st.session_state[show_day2_key] = auto_show_day2
+    show_day2 = st.toggle("Reunion sur 2 jours", key=show_day2_key)
+with toolbar_col2:
+    compact_key = f"compact_mode::{selected_meeting}"
+    if compact_key not in st.session_state:
+        st.session_state[compact_key] = True
+    compact_mode = st.toggle("Mode mobile/tablette", key=compact_key)
+with toolbar_col3:
+    page_size = st.selectbox("Participants par page", [5, 10, 20, 50], index=1, key=f"page_size::{selected_meeting}")
 
-        participants_all_df = df[df["Reunions"] == selected_meeting][["Nom", "Poste", "Entreprise"]]
+meeting_state_key = f"meeting_state::{selected_meeting}"
+if meeting_state_key not in st.session_state:
+    st.session_state[meeting_state_key] = {}
+meeting_state = st.session_state[meeting_state_key]
 
-        for index, row in participants_all_df.iterrows():
-            if index not in meeting_state:
-                meeting_state[index] = {
-                    "Nom": row["Nom"],
-                    "Poste": row["Poste"],
-                    "Entreprise": row["Entreprise"],
-                    "Jour1": "Absent",
-                    "Jour2": "Absent",
-                    "CanvasVersion_Jour1": 0,
-                    "CanvasVersion_Jour2": 0,
-                    "Drawing_Jour1": None,
-                    "Drawing_Jour2": None,
-                    "Signature_Jour1": None,
-                    "Signature_Jour2": None,
-                }
+participants_all_df = selected_rows[["Nom", "Poste", "Entreprise"]].copy()
+participants_all_df = participants_all_df.sort_values(by=["Nom", "Entreprise"], na_position="last")
 
-        participants_df = participants_all_df.copy()
-        st.subheader(f"Participants de la reunion : {selected_meeting}")
-        search_name = st.text_input("Rechercher un participant par nom", key=f"search::{selected_meeting}")
-        if search_name:
-            participants_df = participants_df[
-                participants_df["Nom"].astype(str).str.contains(search_name, case=False, na=False)
-            ]
-        st.caption(f"{len(participants_df)} participant(s) affiche(s)")
+for index, row in participants_all_df.iterrows():
+    if index not in meeting_state:
+        meeting_state[index] = {
+            "Nom": row["Nom"],
+            "Poste": row["Poste"],
+            "Entreprise": row["Entreprise"],
+            "Jour1": DEFAULT_STATUS,
+            "Jour2": DEFAULT_STATUS,
+            "CanvasVersion_Jour1": 0,
+            "CanvasVersion_Jour2": 0,
+            "Drawing_Jour1": None,
+            "Drawing_Jour2": None,
+            "Signature_Jour1": None,
+            "Signature_Jour2": None,
+        }
 
-        for index, row in participants_df.iterrows():
-            participant_state = meeting_state[index]
+st.subheader(f"Participants de la reunion : {selected_meeting}")
+search_name = st.text_input("Rechercher un participant par nom", key=f"search::{selected_meeting}")
+participants_df = participants_all_df.copy()
+if search_name:
+    participants_df = participants_df[
+        participants_df["Nom"].astype(str).str.contains(search_name, case=False, na=False)
+    ]
+
+total_count = len(participants_df)
+total_pages = max(1, math.ceil(total_count / page_size)) if total_count else 1
+page_key = f"page::{selected_meeting}"
+if page_key not in st.session_state:
+    st.session_state[page_key] = 1
+if st.session_state[page_key] > total_pages:
+    st.session_state[page_key] = total_pages
+
+page_col1, page_col2 = st.columns([3, 1])
+with page_col1:
+    st.caption(f"{total_count} participant(s) - page {st.session_state[page_key]}/{total_pages}")
+with page_col2:
+    st.number_input("Page", min_value=1, max_value=total_pages, step=1, key=page_key)
+
+start = (st.session_state[page_key] - 1) * page_size
+end = start + page_size
+participants_page_df = participants_df.iloc[start:end]
+
+for index, row in participants_page_df.iterrows():
+    participant_state = meeting_state[index]
+    name = row["Nom"]
+    poste = row["Poste"]
+    entreprise = row["Entreprise"]
+
+    if compact_mode:
+        header = f"{name} - {entreprise}"
+        with st.expander(header, expanded=False):
+            st.write(f"Poste: {poste}")
+            _render_day_block(1, participant_state, selected_meeting, index, name, canvas_width=320)
             if show_day2:
-                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 2])
+                _render_day_block(2, participant_state, selected_meeting, index, name, canvas_width=320)
             else:
-                col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
-                col5 = None
-
-            with col1:
-                st.write(row["Nom"])
-            with col2:
-                st.write(row["Poste"])
-            with col3:
-                st.write(row["Entreprise"])
-
-            key_j1 = f"{selected_meeting}_{index}_j1"
-            if key_j1 not in st.session_state:
-                st.session_state[key_j1] = participant_state["Jour1"]
-            with col4:
-                statut_j1 = st.radio(f"Jour 1 - {row['Nom']}", ["Present", "Absent", "Excuse"], key=key_j1)
-            participant_state["Jour1"] = statut_j1
-
-            if statut_j1 == "Present":
-                st.write(f"Signature 1 {row['Nom']}:")
-                canvas_key_j1 = (
-                    f"canvas_j1_{selected_meeting}_{index}_{participant_state['CanvasVersion_Jour1']}"
-                )
-                canvas_j1 = st_canvas(
-                    stroke_width=2,
-                    stroke_color="black",
-                    background_color="white",
-                    height=150,
-                    width=400,
-                    display_toolbar=True,
-                    initial_drawing=participant_state["Drawing_Jour1"],
-                    key=canvas_key_j1,
-                )
-                if st.button("Recommencer J1", key=f"reset_j1_{selected_meeting}_{index}"):
-                    participant_state["Drawing_Jour1"] = None
-                    participant_state["Signature_Jour1"] = None
-                    participant_state["CanvasVersion_Jour1"] += 1
-                    st.rerun()
-                if _canvas_has_strokes(canvas_j1):
-                    participant_state["Drawing_Jour1"] = canvas_j1.json_data
-                    signature_j1 = convert_canvas_to_image(canvas_j1)
-                    if signature_j1 is not None:
-                        participant_state["Signature_Jour1"] = signature_j1
-            else:
-                participant_state["Drawing_Jour1"] = None
-                participant_state["Signature_Jour1"] = None
-
-            if show_day2:
-                key_j2 = f"{selected_meeting}_{index}_j2"
-                if key_j2 not in st.session_state:
-                    st.session_state[key_j2] = participant_state["Jour2"]
-                with col5:
-                    statut_j2 = st.radio(f"Jour 2 - {row['Nom']}", ["Present", "Absent", "Excuse"], key=key_j2)
-                participant_state["Jour2"] = statut_j2
-
-                if statut_j2 == "Present":
-                    st.write(f"Signature 2 {row['Nom']}:")
-                    canvas_key_j2 = (
-                        f"canvas_j2_{selected_meeting}_{index}_{participant_state['CanvasVersion_Jour2']}"
-                    )
-                    canvas_j2 = st_canvas(
-                        stroke_width=2,
-                        stroke_color="black",
-                        background_color="white",
-                        height=150,
-                        width=400,
-                        display_toolbar=True,
-                        initial_drawing=participant_state["Drawing_Jour2"],
-                        key=canvas_key_j2,
-                    )
-                    if st.button("Recommencer J2", key=f"reset_j2_{selected_meeting}_{index}"):
-                        participant_state["Drawing_Jour2"] = None
-                        participant_state["Signature_Jour2"] = None
-                        participant_state["CanvasVersion_Jour2"] += 1
-                        st.rerun()
-                    if _canvas_has_strokes(canvas_j2):
-                        participant_state["Drawing_Jour2"] = canvas_j2.json_data
-                        signature_j2 = convert_canvas_to_image(canvas_j2)
-                        if signature_j2 is not None:
-                            participant_state["Signature_Jour2"] = signature_j2
-                else:
-                    participant_state["Drawing_Jour2"] = None
-                    participant_state["Signature_Jour2"] = None
-            else:
-                participant_state["Jour2"] = "Absent"
+                participant_state["Jour2"] = DEFAULT_STATUS
                 participant_state["Drawing_Jour2"] = None
                 participant_state["Signature_Jour2"] = None
+    else:
+        if show_day2:
+            col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 2])
+        else:
+            col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+            col5 = None
 
-        participants_data = []
-        for index, _ in participants_all_df.iterrows():
-            participant_state = meeting_state[index]
-            participants_data.append(
-                {
-                    "Nom": participant_state["Nom"],
-                    "Poste": participant_state["Poste"],
-                    "Entreprise": participant_state["Entreprise"],
-                    "Jour1": participant_state["Jour1"],
-                    "Jour2": participant_state["Jour2"],
-                    "Signature_Jour1": participant_state["Signature_Jour1"],
-                    "Signature_Jour2": participant_state["Signature_Jour2"],
-                }
-            )
+        with col1:
+            st.write(name)
+        with col2:
+            st.write(poste)
+        with col3:
+            st.write(entreprise)
+        with col4:
+            _render_day_block(1, participant_state, selected_meeting, index, name, canvas_width=290)
+        if show_day2:
+            with col5:
+                _render_day_block(2, participant_state, selected_meeting, index, name, canvas_width=290)
+        else:
+            participant_state["Jour2"] = DEFAULT_STATUS
+            participant_state["Drawing_Jour2"] = None
+            participant_state["Signature_Jour2"] = None
 
-        if st.button("Generer PDF"):
-            has_any_signature_j2 = any(p.get("Signature_Jour2") is not None for p in participants_data)
-            include_day2_pdf = show_day2 and has_any_signature_j2
-            pdf_buffer = generate_pdf(selected_meeting, participants_data, include_day2=include_day2_pdf)
-            generation_date = datetime.now().strftime("%Y-%m-%d")
-            safe_meeting_name = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in str(selected_meeting)).strip()
-            st.success("PDF genere avec succes !")
-            st.download_button(
-                label="Telecharger le PDF",
-                data=pdf_buffer.getvalue(),
-                file_name=f"{safe_meeting_name}_{generation_date}.pdf",
-                mime="application/pdf",
-            )
-else:
-    st.info("Chargez un fichier Excel pour commencer.")
+participants_data = []
+for index, _ in participants_all_df.iterrows():
+    participant_state = meeting_state[index]
+    participants_data.append(
+        {
+            "Nom": participant_state["Nom"],
+            "Poste": participant_state["Poste"],
+            "Entreprise": participant_state["Entreprise"],
+            "Jour1": participant_state["Jour1"],
+            "Jour2": participant_state["Jour2"],
+            "Signature_Jour1": participant_state["Signature_Jour1"],
+            "Signature_Jour2": participant_state["Signature_Jour2"],
+        }
+    )
+
+if st.button("Generer PDF"):
+    has_any_signature_j2 = any(p.get("Signature_Jour2") is not None for p in participants_data)
+    include_day2_pdf = show_day2 and has_any_signature_j2
+    pdf_buffer = generate_pdf(selected_meeting, participants_data, include_day2=include_day2_pdf)
+    generation_date = datetime.now().strftime("%Y-%m-%d")
+    safe_meeting_name = "".join(
+        c if c.isalnum() or c in (" ", "-", "_") else "_" for c in str(selected_meeting)
+    ).strip()
+    st.success("PDF genere avec succes !")
+    st.download_button(
+        label="Telecharger le PDF",
+        data=pdf_buffer.getvalue(),
+        file_name=f"{safe_meeting_name}_{generation_date}.pdf",
+        mime="application/pdf",
+    )
