@@ -34,22 +34,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-##Selectionner le fichier excel et charger les données
 uploaded_file = st.file_uploader("Selectionner le fichier Excel des reunions", type=["xlsx"])
-
-#EXCEL_PATH = r"C:\Users\bboussari\OneDrive - CONSEIL NATIONAL CERFRANCE\Direction Digital\Bdd_reunion.xlsx"
 
 if uploaded_file is not None:
     df = _load_excel(uploaded_file.getvalue())
-    liste_reunions = df["Reunions"].unique().tolist()
+    required_columns = {"Reunions", "Nom", "Poste", "Entreprise"}
+    if not required_columns.issubset(df.columns):
+        st.error("Colonnes attendues: Reunions, Nom, Poste, Entreprise.")
+        st.stop()
+
+    liste_reunions = df["Reunions"].dropna().unique().tolist()
     selected_meeting = st.selectbox("Choisir la reunion", liste_reunions)
 
     if selected_meeting:
-        required_columns = {"Reunions", "Nom", "Poste", "Entreprise"}
-        if not required_columns.issubset(df.columns):
-            st.error("Colonnes attendues: Reunions, Nom, Poste, Entreprise.")
-            st.stop()
-
         selected_rows = df[df["Reunions"] == selected_meeting]
         auto_show_day2 = True
         if "NbJours" in df.columns:
@@ -113,11 +110,7 @@ if uploaded_file is not None:
             if key_j1 not in st.session_state:
                 st.session_state[key_j1] = participant_state["Jour1"]
             with col4:
-                statut_j1 = st.radio(
-                    f"Jour 1 - {row['Nom']}",
-                    ["Present", "Absent", "Excuse"],
-                    key=key_j1,
-                )
+                statut_j1 = st.radio(f"Jour 1 - {row['Nom']}", ["Present", "Absent", "Excuse"], key=key_j1)
             participant_state["Jour1"] = statut_j1
 
             if statut_j1 == "Present":
@@ -140,8 +133,6 @@ if uploaded_file is not None:
                     participant_state["Signature_Jour1"] = None
                     participant_state["CanvasVersion_Jour1"] += 1
                     st.rerun()
-                # Autosave robuste: on met a jour uniquement si des traits existent.
-                # Evite de perdre une signature a cause d'un rerun avec canvas vide.
                 if _canvas_has_strokes(canvas_j1):
                     participant_state["Drawing_Jour1"] = canvas_j1.json_data
                     signature_j1 = convert_canvas_to_image(canvas_j1)
@@ -156,11 +147,7 @@ if uploaded_file is not None:
                 if key_j2 not in st.session_state:
                     st.session_state[key_j2] = participant_state["Jour2"]
                 with col5:
-                    statut_j2 = st.radio(
-                        f"Jour 2 - {row['Nom']}",
-                        ["Present", "Absent", "Excuse"],
-                        key=key_j2,
-                    )
+                    statut_j2 = st.radio(f"Jour 2 - {row['Nom']}", ["Present", "Absent", "Excuse"], key=key_j2)
                 participant_state["Jour2"] = statut_j2
 
                 if statut_j2 == "Present":
@@ -183,8 +170,6 @@ if uploaded_file is not None:
                         participant_state["Signature_Jour2"] = None
                         participant_state["CanvasVersion_Jour2"] += 1
                         st.rerun()
-                    # Autosave robuste: on met a jour uniquement si des traits existent.
-                    # Evite de perdre une signature a cause d'un rerun avec canvas vide.
                     if _canvas_has_strokes(canvas_j2):
                         participant_state["Drawing_Jour2"] = canvas_j2.json_data
                         signature_j2 = convert_canvas_to_image(canvas_j2)
@@ -223,4 +208,4 @@ if uploaded_file is not None:
                 mime="application/pdf",
             )
 else:
-    st.info("Charge un fichier Excel pour commencer.")
+    st.info("Chargez un fichier Excel pour commencer.")
