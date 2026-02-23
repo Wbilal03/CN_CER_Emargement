@@ -2,7 +2,9 @@ import math
 from datetime import datetime
 from io import BytesIO
 
+import numpy as np
 import pandas as pd
+from PIL import Image as PILImage
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 
@@ -14,15 +16,57 @@ DEFAULT_STATUS = "Absent"
 
 
 def _canvas_has_strokes(canvas_result):
-    if canvas_result is None or canvas_result.json_data is None:
+    if canvas_result is None:
         return False
-    return len(canvas_result.json_data.get("objects", [])) > 0
+    if canvas_result.json_data is not None:
+        if len(canvas_result.json_data.get("objects", [])) > 0:
+            return True
+    if canvas_result.image_data is not None:
+        image = np.array(canvas_result.image_data)
+        if image.size > 0:
+            # Fond blanc => on detecte un trait si au moins un pixel est plus sombre que quasi-blanc.
+            return bool(np.any(image[:, :, :3] < 245))
+    return False
 
 
 def _normalize_status(value):
-    if value in PRESENCE_OPTIONS:
-        return value
+    if value is None:
+        return DEFAULT_STATUS
+    v = str(value).strip().lower()
+    if v in {"present", "présent", "prã©sent"}:
+        return "Present"
+    if v == "absent":
+        return "Absent"
+    if v in {"excuse", "excusé", "excusée"}:
+        return "Excuse"
     return DEFAULT_STATUS
+
+
+def _is_present(status):
+    return _normalize_status(status) == "Present"
+
+
+def _merge_signature_images(existing_image, new_image):
+    if existing_image is None:
+        return new_image
+    if new_image is None:
+        return existing_image
+
+    existing_arr = np.array(existing_image.convert("RGB"), dtype=np.uint8)
+    new_arr = np.array(new_image.convert("RGB"), dtype=np.uint8)
+
+    if existing_arr.shape != new_arr.shape:
+        height = max(existing_arr.shape[0], new_arr.shape[0])
+        width = max(existing_arr.shape[1], new_arr.shape[1])
+        existing_canvas = np.full((height, width, 3), 255, dtype=np.uint8)
+        new_canvas = np.full((height, width, 3), 255, dtype=np.uint8)
+        existing_canvas[: existing_arr.shape[0], : existing_arr.shape[1], :] = existing_arr
+        new_canvas[: new_arr.shape[0], : new_arr.shape[1], :] = new_arr
+        existing_arr = existing_canvas
+        new_arr = new_canvas
+
+    merged_arr = np.minimum(existing_arr, new_arr)
+    return PILImage.fromarray(merged_arr, mode="RGB")
 
 
 @st.cache_data(show_spinner=False)
@@ -53,7 +97,7 @@ def _render_day_block(day_number, participant_state, selected_meeting, index, pe
     status = _presence_selector(f"Jour {day_number} - {person_name}", status_key)
     participant_state[status_field] = status
 
-    if status != "Present":
+    if not _is_present(status):
         participant_state[draw_field] = None
         participant_state[sign_field] = None
         return
@@ -67,21 +111,34 @@ def _render_day_block(day_number, participant_state, selected_meeting, index, pe
         height=140,
         width=canvas_width,
         display_toolbar=True,
+        update_streamlit=True,
         initial_drawing=participant_state[draw_field],
         key=canvas_key,
     )
 
-    if st.button(f"Recommencer J{day_number}", key=f"reset_j{day_number}_{selected_meeting}_{index}"):
-        participant_state[draw_field] = None
-        participant_state[sign_field] = None
-        participant_state[version_field] += 1
-        st.rerun()
+    action_col1, action_col2 = st.columns([1, 1])
+    with action_col1:
+        if st.button(f"Enregistrer J{day_number}", key=f"save_j{day_number}_{selected_meeting}_{index}"):
+            if _canvas_has_strokes(canvas_result):
+                participant_state[draw_field] = canvas_result.json_data
+                signature_image = convert_canvas_to_image(canvas_result)
+                if signature_image is not None:
+                    participant_state[sign_field] = _merge_signature_images(
+                        participant_state.get(sign_field),
+                        signature_image,
+                    )
+                    st.success(f"Signature J{day_number} enregistree")
+            else:
+                st.warning("Aucun trait detecte sur la signature.")
+    with action_col2:
+        if st.button(f"Recommencer J{day_number}", key=f"reset_j{day_number}_{selected_meeting}_{index}"):
+            participant_state[draw_field] = None
+            participant_state[sign_field] = None
+            participant_state[version_field] += 1
+            st.rerun()
 
-    if _canvas_has_strokes(canvas_result):
-        participant_state[draw_field] = canvas_result.json_data
-        signature_image = convert_canvas_to_image(canvas_result)
-        if signature_image is not None:
-            participant_state[sign_field] = signature_image
+    if participant_state.get(sign_field) is not None:
+        st.caption(f"Signature J{day_number} sauvegardee")
 
 
 st.set_page_config(layout="wide")
@@ -293,10 +350,17 @@ if st.button("Generer PDF"):
     safe_meeting_name = "".join(
         c if c.isalnum() or c in (" ", "-", "_") else "_" for c in str(selected_meeting)
     ).strip()
+    st.session_state[f"pdf_bytes::{selected_meeting}"] = pdf_buffer.getvalue()
+    st.session_state[f"pdf_name::{selected_meeting}"] = f"{safe_meeting_name}_{generation_date}.pdf"
     st.success("PDF genere avec succes !")
+
+pdf_bytes_key = f"pdf_bytes::{selected_meeting}"
+pdf_name_key = f"pdf_name::{selected_meeting}"
+if pdf_bytes_key in st.session_state:
     st.download_button(
         label="Telecharger le PDF",
-        data=pdf_buffer.getvalue(),
-        file_name=f"{safe_meeting_name}_{generation_date}.pdf",
+        data=st.session_state[pdf_bytes_key],
+        file_name=st.session_state.get(pdf_name_key, "emargement.pdf"),
         mime="application/pdf",
+        key=f"download_pdf::{selected_meeting}",
     )
