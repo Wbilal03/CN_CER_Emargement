@@ -15,6 +15,20 @@ def _canvas_has_strokes(canvas_result):
 
 st.set_page_config(layout="wide")
 st.title("Emargement - Conseil National du Reseau CERFRANCE")
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stToolbar"] {display: none;}
+    [data-testid="stStatusWidget"] {display: none;}
+    [data-testid="stDecoration"] {display: none;}
+    [data-testid="stSidebarNav"] {display: none;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 ##Selectionner le fichier excel et charger les données
 uploaded_file = st.file_uploader("Selectionner le fichier Excel des reunions", type=["xlsx"])
