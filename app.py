@@ -28,6 +28,12 @@ if EXCEL_PATH is not None:
         # Filtrer les participants pour cette réunion
         participants_df = df[df["Reunions"] == selected_meeting][["Nom", "Poste", "Entreprise"]]
         st.subheader(f"Participants de la réunion : {selected_meeting}")
+        search_name = st.text_input("Rechercher un participant par nom")
+        if search_name:
+            participants_df = participants_df[
+                participants_df["Nom"].astype(str).str.contains(search_name, case=False, na=False)
+            ]
+        st.caption(f"{len(participants_df)} participant(s) affiché(s)")
 
         participants_data = []
 
@@ -48,7 +54,7 @@ if EXCEL_PATH is not None:
                 statut_j1 = st.radio(
                     f"Jour 1 - {row['Nom']}",
                     ["Présent", "Absent", "Excusé"],
-                    key=f"{row['Nom']}_j1"
+                    key=f"{row['Nom']}_{index}_j1"
                 )
             signature_j1 = None
             if statut_j1 == "Présent":
@@ -59,7 +65,7 @@ if EXCEL_PATH is not None:
                     background_color="white",
                     height=150,
                     width=400,
-                    key=f"canvas_j1_{row['Nom']}"
+                    key=f"canvas_j1_{row['Nom']}_{index}"
                 )
                 signature_j1 = convert_canvas_to_image(canvas_j1)
 
@@ -68,7 +74,7 @@ if EXCEL_PATH is not None:
                 statut_j2 = st.radio(
                     f"Jour 2 - {row['Nom']}",
                     ["Présent", "Absent", "Excusé"],
-                    key=f"{row['Nom']}_j2"
+                    key=f"{row['Nom']}_{index}_j2"
                 )
             signature_j2 = None
             if statut_j2 == "Présent":
@@ -79,7 +85,7 @@ if EXCEL_PATH is not None:
                     background_color="white",
                     height=150,
                     width=400,
-                    key=f"canvas_j2_{row['Nom']}"
+                    key=f"canvas_j2_{row['Nom']}_{index}"
                 )
                 signature_j2 = convert_canvas_to_image(canvas_j2)
 
