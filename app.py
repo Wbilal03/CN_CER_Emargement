@@ -1,6 +1,10 @@
 import math
+import json
+import base64
+import hashlib
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,6 +17,7 @@ from generateur_pdf import generate_pdf
 
 PRESENCE_OPTIONS = ["Present", "Absent", "Excuse"]
 DEFAULT_STATUS = "Absent"
+STATE_DIR = Path(".emargement_state")
 
 
 def _canvas_has_strokes(canvas_result):
@@ -69,9 +74,101 @@ def _merge_signature_images(existing_image, new_image):
     return PILImage.fromarray(merged_arr, mode="RGB")
 
 
+def _safe_slug(value):
+    return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(value)).strip("_")
+
+
+def _image_to_b64(img):
+    if img is None:
+        return None
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _b64_to_image(payload):
+    if not payload:
+        return None
+    data = base64.b64decode(payload.encode("ascii"))
+    return PILImage.open(BytesIO(data)).convert("RGB")
+
+
+def _state_path(file_hash, meeting_name):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return STATE_DIR / f"{file_hash}_{_safe_slug(meeting_name)}.json"
+
+
+def _save_meeting_state(file_hash, meeting_name, meeting_state):
+    payload = {}
+    for idx, state in meeting_state.items():
+        payload[str(idx)] = {
+            "Nom": state.get("Nom"),
+            "Poste": state.get("Poste"),
+            "Entreprise": state.get("Entreprise"),
+            "Jour1": _normalize_status(state.get("Jour1")),
+            "Jour2": _normalize_status(state.get("Jour2")),
+            "CanvasVersion_Jour1": int(state.get("CanvasVersion_Jour1", 0)),
+            "CanvasVersion_Jour2": int(state.get("CanvasVersion_Jour2", 0)),
+            "Drawing_Jour1": state.get("Drawing_Jour1"),
+            "Drawing_Jour2": state.get("Drawing_Jour2"),
+            "Signature_Jour1": _image_to_b64(state.get("Signature_Jour1")),
+            "Signature_Jour2": _image_to_b64(state.get("Signature_Jour2")),
+        }
+    _state_path(file_hash, meeting_name).write_text(
+        json.dumps(payload, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+
+def _load_meeting_state(file_hash, meeting_name):
+    path = _state_path(file_hash, meeting_name)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    restored = {}
+    for idx, state in raw.items():
+        restored[int(idx)] = {
+            "Nom": state.get("Nom"),
+            "Poste": state.get("Poste"),
+            "Entreprise": state.get("Entreprise"),
+            "Jour1": _normalize_status(state.get("Jour1")),
+            "Jour2": _normalize_status(state.get("Jour2")),
+            "CanvasVersion_Jour1": int(state.get("CanvasVersion_Jour1", 0)),
+            "CanvasVersion_Jour2": int(state.get("CanvasVersion_Jour2", 0)),
+            "Drawing_Jour1": state.get("Drawing_Jour1"),
+            "Drawing_Jour2": state.get("Drawing_Jour2"),
+            "Signature_Jour1": _b64_to_image(state.get("Signature_Jour1")),
+            "Signature_Jour2": _b64_to_image(state.get("Signature_Jour2")),
+        }
+    return restored
+
+
 @st.cache_data(show_spinner=False)
 def _load_excel(file_bytes):
     return pd.read_excel(BytesIO(file_bytes))
+
+
+def _uploaded_file_bytes(uploaded_file):
+    if uploaded_file is None:
+        return None
+    try:
+        data = uploaded_file.getvalue()
+        if data:
+            return data
+    except Exception:
+        pass
+    try:
+        uploaded_file.seek(0)
+        data = uploaded_file.read()
+        if data:
+            return data
+    except Exception:
+        pass
+    return None
 
 
 def _presence_selector(label, key):
@@ -205,7 +302,13 @@ if uploaded_file is None:
     st.info("Chargez un fichier Excel pour commencer.")
     st.stop()
 
-df = _load_excel(uploaded_file.getvalue())
+uploaded_file_bytes = _uploaded_file_bytes(uploaded_file)
+if not uploaded_file_bytes:
+    st.warning("Le fichier charge est invalide. Rechargez le fichier Excel.")
+    st.stop()
+
+df = _load_excel(uploaded_file_bytes)
+file_hash = hashlib.md5(uploaded_file_bytes).hexdigest()[:12]
 required_columns = {"Reunions", "Nom", "Poste", "Entreprise"}
 if not required_columns.issubset(df.columns):
     st.error("Colonnes attendues: Reunions, Nom, Poste, Entreprise.")
@@ -239,7 +342,10 @@ with toolbar_col3:
 
 meeting_state_key = f"meeting_state::{selected_meeting}"
 if meeting_state_key not in st.session_state:
-    st.session_state[meeting_state_key] = {}
+    restored_state = _load_meeting_state(file_hash, selected_meeting)
+    st.session_state[meeting_state_key] = restored_state
+    if restored_state:
+        st.info("Progression restauree automatiquement.")
 meeting_state = st.session_state[meeting_state_key]
 
 participants_all_df = selected_rows[["Nom", "Poste", "Entreprise"]].copy()
@@ -342,7 +448,25 @@ for index, _ in participants_all_df.iterrows():
         }
     )
 
+try:
+    _save_meeting_state(file_hash, selected_meeting, meeting_state)
+except Exception:
+    st.warning("Impossible de sauvegarder localement l'etat de la reunion.")
+
 if st.button("Generer PDF"):
+    missing_signatures = []
+    for p in participants_data:
+        if _is_present(p.get("Jour1")) and p.get("Signature_Jour1") is None:
+            missing_signatures.append(f"{p.get('Nom', 'Participant inconnu')} - Jour 1")
+        if show_day2 and _is_present(p.get("Jour2")) and p.get("Signature_Jour2") is None:
+            missing_signatures.append(f"{p.get('Nom', 'Participant inconnu')} - Jour 2")
+
+    if missing_signatures:
+        st.error("Impossible de generer le PDF: des participants sont presents sans signature.")
+        for item in missing_signatures:
+            st.write(f"- {item}")
+        st.stop()
+
     has_any_signature_j2 = any(p.get("Signature_Jour2") is not None for p in participants_data)
     include_day2_pdf = show_day2 and has_any_signature_j2
     pdf_buffer = generate_pdf(selected_meeting, participants_data, include_day2=include_day2_pdf)
