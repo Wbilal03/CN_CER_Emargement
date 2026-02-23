@@ -1,9 +1,11 @@
 import pandas as pd
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
+from datetime import datetime
 
 from Signature_utils import convert_canvas_to_image
 from generateur_pdf import generate_pdf
+from io import BytesIO
 
 
 def _canvas_has_strokes(canvas_result):
@@ -14,11 +16,13 @@ def _canvas_has_strokes(canvas_result):
 
 @st.cache_data(show_spinner=False)
 def _load_excel(file_bytes):
-    return pd.read_excel(file_bytes)
+    return pd.read_excel(BytesIO(file_bytes))
 
 
 st.set_page_config(layout="wide")
-st.title("Emargement - Conseil National du Reseau CERFRANCE")
+st.title("CNCER Sign")
+#ajouté une balise de style pour cacher les éléments de navigation et de décoration de Streamlit pour une interface plus épurée lors de la signature. Cela permet aux utilisateurs de se concentrer sur le processus de signature sans distractions inutiles.
+
 st.markdown(
     """
     <style>
@@ -199,12 +203,16 @@ if uploaded_file is not None:
             )
 
         if st.button("Generer PDF"):
-            pdf_buffer = generate_pdf(selected_meeting, participants_data, include_day2=show_day2)
+            has_any_signature_j2 = any(p.get("Signature_Jour2") is not None for p in participants_data)
+            include_day2_pdf = show_day2 and has_any_signature_j2
+            pdf_buffer = generate_pdf(selected_meeting, participants_data, include_day2=include_day2_pdf)
+            generation_date = datetime.now().strftime("%Y-%m-%d")
+            safe_meeting_name = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in str(selected_meeting)).strip()
             st.success("PDF genere avec succes !")
             st.download_button(
                 label="Telecharger le PDF",
                 data=pdf_buffer.getvalue(),
-                file_name=f"emargement_{selected_meeting}.pdf",
+                file_name=f"{safe_meeting_name}_{generation_date}.pdf",
                 mime="application/pdf",
             )
 else:
